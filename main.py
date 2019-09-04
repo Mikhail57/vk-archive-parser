@@ -1,12 +1,15 @@
 import json
-import asyncio
-import aiohttp
+from multiprocessing.pool import ThreadPool
+
+import requests
 from os import listdir
 from os.path import isfile, isdir, join, basename, dirname, splitext
 from bs4 import BeautifulSoup
-from contextlib import closing
 
 BASE_DIR = '/Users/mikhailmustakimov/Downloads/Archive/messages'
+OUT_DIR_IMG_ALL = join('result', 'all_images')
+
+__current_id = ''
 
 
 def get_attachment_image_links_from_document(html_doc: str) -> list:
@@ -51,36 +54,42 @@ def walk_messages_directory(base_dir: str) -> dict:
     return result
 
 
-async def download_file(session: aiohttp.ClientSession, url: str):
-    async with session.get(url) as response:
-        assert response.status == 200
-        # For large files use response.content.read(chunk_size) instead.
-        return await response.read()
+def download_file(url: str):
+    file_name_start_pos = url.rfind("/") + 1
+    file_name = url[file_name_start_pos:]
+    file_name = join(OUT_DIR_IMG_ALL, __current_id + '_' + file_name)
 
-
-@asyncio.coroutine
-def download_multiple(session: aiohttp.ClientSession, urls: list):
-    download_futures = [download_file(session, url) for url in urls]
-    results = []
-    for download_future in asyncio.as_completed(download_futures):
-        response = yield from download_future
-        results.append(response)
-    return results
+    r = requests.get(url, stream=True)
+    if r.status_code == requests.codes.ok:
+        with open(file_name, 'wb') as f:
+            for data in r:
+                f.write(data)
+    return url
 
 
 def download_images(obj: dict):
-    with closing(asyncio.get_event_loop()) as loop:
-        with aiohttp.ClientSession() as session:
-            for id, urls in obj.items():
-                result = loop.run_until_complete(download_multiple(session, ))
-                print('finished:', result)
+    global __current_id
+    total_count = len(obj)
+    i = 1
+    pool = ThreadPool(8)
+    for key, urls in obj.items():
+        __current_id = key
+        print('Downloading ' + str(i) + ' out of ' + str(total_count))
+        result = list(pool.imap_unordered(download_file, urls))
+        # print(result)
+        i += 1
+    pool.close()
 
 
 def main():
     result = walk_messages_directory(BASE_DIR)
-    f = open('result.json', 'w')
+    f = open('result/result.json', 'w')
     json.dump(result, f)
     f.close()
+    f = open('result/result.json')
+    result = json.load(f)
+    f.close()
+    download_images(result)
 
 
 if __name__ == '__main__':
